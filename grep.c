@@ -8,7 +8,8 @@ static char equal(const char *buf, size_t buf_pos, const char *src_buf, size_t s
 	for (buf_pos = 0; i < size; ++i, ++buf_pos)
 		if (buf[buf_pos] != src_buf[i]) return 0;
 	
-	// Это менее сложно, но более гибко. Но медленнее.
+	// Это менее сложно, но более гибко (общий случай для любого закольцованного буфера).
+	// Плохое решение в данном случае, т.к. медленнее.
 	//for (i = 0; i < size; ++i, ++buf_pos) {
 	//	if (buf_pos == size) buf_pos = 0;
 	//	if (buf[buf_pos] != src_buf[i]) return 0;
@@ -42,12 +43,26 @@ static int grep_file(const struct arguments *args, const char *text, size_t text
 	}
 	
 	size_t data_pos = 0;
-	off_t curr_pos = 0;	// Для whence = SEEK_SET (смещение от начала файла)
+	off_t curr_pos = 0, line_beg_pos = 0;	// Для whence = SEEK_SET (смещение от начала файла)
 	
 	do {
 		if (equal(data, data_pos, text, text_len)) {	// Текст найден
 			// Печать имени файла
 			printf("%s: ", path);
+			
+			
+			// Печать префикса
+			{
+				off_t prefix_beg_pos = line_beg_pos;
+				if (args->short_form && curr_pos > AROUND_MAX + prefix_beg_pos)
+					prefix_beg_pos = curr_pos - AROUND_MAX;
+				fseeko(file, prefix_beg_pos, SEEK_SET);
+				
+				while (prefix_beg_pos++ < curr_pos) {
+					int ch = getc(file);
+					putchar(ch);
+				}
+			}
 			
 			
 			// Печать найденного текста с цветом
@@ -67,29 +82,28 @@ static int grep_file(const struct arguments *args, const char *text, size_t text
 			
 			
 			// Печать постфикса
-			off_t postfix_beg_pos = curr_pos + text_len;
-			fseeko(file, postfix_beg_pos, SEEK_SET);
-			int ch;
-			if (args->short_form) {
-				off_t postfix_end_pos = postfix_beg_pos + AROUND_MAX;
-				while (!feof(file)
-						&& postfix_beg_pos++ < postfix_end_pos
-						&& (ch = getc(file)) != '\n' && ch != '\v')
-					putchar(ch);
-			} else {
-				while (!feof(file)
-						&& (ch = getc(file)) != '\n' && ch != '\v')
-					putchar(ch);
+			{
+				off_t postfix_beg_pos = curr_pos + text_len;
+				fseeko(file, postfix_beg_pos, SEEK_SET);
+				int ch;
+				if (args->short_form) {
+					off_t postfix_end_pos = postfix_beg_pos + AROUND_MAX;
+					while (!feof(file) && (ch = getc(file)) != '\n' && ch != '\v'
+							&& postfix_beg_pos++ < postfix_end_pos)
+						putchar(ch);
+				} else {
+					while (!feof(file) && (ch = getc(file)) != '\n' && ch != '\v')
+						putchar(ch);
+				}
 			}
 			
 			putchar('\n');
-			
-			
 			fseeko(file, curr_pos + text_len, SEEK_SET);
 		}
 		
-		
 		++curr_pos;
+		if (data[data_pos] == '\n' || data[data_pos] == '\v')
+			line_beg_pos = curr_pos;
 		data[data_pos] = getc(file);
 		if (++data_pos == text_len) data_pos = 0;
 	} while (!feof(file));
